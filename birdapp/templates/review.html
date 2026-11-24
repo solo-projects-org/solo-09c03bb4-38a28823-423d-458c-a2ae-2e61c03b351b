@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>待核记录（最新版 v{{ latest }}）</h1>
+<p>从每条记录<strong>当前的换算起点</strong>（已确认则从确认学名/确认版，否则从原名/原版）
+   逐版核对正式名录：某版没有正式名单则该版沿用原换算规则；任一路径经过未收录学名，
+   即使后来并回有效学名，整条记录也列入待核并<strong>暂不计入汇总</strong>，原明细保留。</p>
+<p>已提供正式名单的版号：
+  {% if checklist_versions %}{{ checklist_versions|map("string")|join("、") }}
+  {% else %}无（此时不会产生待核记录）{% endif %}。
+  名单/对照/明细/复核任一改动后，本页按当前生效数据重判。</p>
+
+{% if not pending %}
+<p class="ok-text">暂无待核记录。</p>
+{% else %}
+<p>共 <strong>{{ pending|length }}</strong> 条待核记录。</p>
+<table>
+  <tr>
+    <th>记录号</th><th>年份</th><th>原学名</th><th>原版</th><th>只数</th>
+    <th>换算起点</th><th>缺名（版号 / 学名）</th><th>最新版可达学名</th>
+  </tr>
+  {% for p in pending %}
+  <tr>
+    <td>{{ p.record_id }}</td>
+    <td>{{ p.year }}</td>
+    <td>{{ p.sci_name }}</td>
+    <td>v{{ p.version }}</td>
+    <td>{{ p.count }}</td>
+    <td>{{ p.start_name }}（v{{ p.start_version }}）
+      {% if p.confirmed_name %}<span class="tag">已确认</span>{% endif %}
+    </td>
+    <td>
+      {% for m in p.missing %}v{{ m.version }} / {{ m.name }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+    </td>
+    <td>{{ p.reachable|join("、") }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+<p><a href="{{ url_for('main.records_page') }}">前往记录复核处理 →</a></p>
+{% endblock %}

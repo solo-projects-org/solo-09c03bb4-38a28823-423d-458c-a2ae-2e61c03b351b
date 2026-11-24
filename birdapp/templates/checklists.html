@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>各版正式名录（当前最新版 v{{ latest }}）</h1>
+<p>普查员可在此选择版号，上传单列学名的正式名录 CSV，<strong>整份替换该版名单</strong>。
+   表头必须为 <code>学名</code>，一行一个学名（文件内自动去重）。
+   文件有误或保存失败时保留该版原名单；换名单时<strong>不扫描普查明细</strong>，
+   是否有待核记录由下次汇总/待核页按生效数据重判。</p>
+
+<section class="card">
+  <h2>整份替换某版正式名录</h2>
+  <form method="post" action="{{ url_for('main.upload_checklist') }}"
+        enctype="multipart/form-data">
+    <p>
+      <label>版号
+        <input name="version" type="number" class="ver" min="1" value="{{ latest }}" required>
+      </label>
+      <input type="file" name="file" accept=".csv" required>
+      <button type="submit">替换该版正式名录</button>
+    </p>
+    <p class="hint">CSV 示例：<code>学名<br>Larus argentatus<br>Larus michahellis</code></p>
+  </form>
+</section>
+
+<h2>已收录正式名单的版号</h2>
+{% if not versions %}
+<p>还没有任何版的正式名录。未提供正式名单的版不做收录核对，沿用原换算规则。</p>
+{% else %}
+<table>
+  <tr><th>版号</th><th>收录学名数</th><th>学名预览（最多10个）</th></tr>
+  {% for v in versions %}
+  <tr>
+    <td>v{{ v.version }}</td>
+    <td>{{ v.count }}</td>
+    <td>{{ preview[v.version]|join("、") }}{% if v.count > 10 %} …{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endif %}
+<p><a href="{{ url_for('main.review_page') }}">查看待核记录 →</a></p>
+{% endblock %}

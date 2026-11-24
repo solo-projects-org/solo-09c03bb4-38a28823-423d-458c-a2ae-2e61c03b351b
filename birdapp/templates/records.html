@@ -9,11 +9,11 @@
 <table>
   <tr>
     <th>记录号</th><th>年份</th><th>原学名</th><th>原版</th><th>只数</th>
-    <th>已确认</th><th>最新版可达</th><th>复核操作</th>
+    <th>已确认</th><th>最新版可达</th><th>待核缺名</th><th>复核操作</th>
   </tr>
   {% for row in rows %}
   {% set rec = row.rec %}
-  <tr>
+  <tr{% if rec.record_id in missing_by_id %} class="pending-row"{% endif %}>
     <td>{{ rec.record_id }}</td>
     <td>{{ rec.year }}</td>
     <td>{{ rec.sci_name }}</td>
@@ -24,6 +24,13 @@
       {% else %}—{% endif %}
     </td>
     <td>{{ row.reachable|join("、") }}</td>
+    <td>
+      {% if rec.record_id in missing_by_id %}
+        {% for m in missing_by_id[rec.record_id] %}
+          v{{ m.version }} / {{ m.name }}{% if not loop.last %}<br>{% endif %}
+        {% endfor %}
+      {% else %}—{% endif %}
+    </td>
     <td>
       <form method="post" class="inline"
             action="{{ url_for('main.confirm', record_id=rec.record_id) }}">

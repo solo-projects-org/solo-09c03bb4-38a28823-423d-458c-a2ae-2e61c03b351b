@@ -4,8 +4,20 @@
 <p>
   当前：普查记录 <strong>{{ stats.records }}</strong> 条（已确认
   {{ stats.confirmed }} 条），名录对照 <strong>{{ stats.mapping }}</strong> 条，
+  正式名录已覆盖 <strong>{{ stats.checklists }}</strong> 个版号，
+  待核记录 <strong>{{ stats.pending }}</strong> 条，
   最新版 <strong>v{{ stats.latest }}</strong>。
 </p>
+
+<section class="card">
+  <h2>整份替换某版正式名录 CSV</h2>
+  <p>表头：<code>学名</code>（单列，一行一个学名）。选择版号后上传即<strong>整份替换该版名单</strong>：
+     文件有误或保存失败时保留原名单；换名单时不扫描普查明细。</p>
+  <p>从每条记录当前的换算起点逐版核对，缺正式名单的版沿用原换算规则；
+     任一路径经过未收录学名（即使后来并回有效学名）的记录列入
+     <a href="{{ url_for('main.review_page') }}">待核记录</a>，整条暂不计入汇总，原明细保留。</p>
+  <p><a class="button-link" href="{{ url_for('main.checklists_page') }}">前往正式名录管理 →</a></p>
+</section>
 
 <section class="card">
   <h2>上传普查记录 CSV</h2>

@@ -5,6 +5,7 @@ import io
 
 RECORDS_HEADER = ["记录号", "年份", "名录版", "学名", "只数"]
 MAPPING_HEADER = ["起版", "旧学名", "下一版学名"]
+CHECKLIST_HEADER = ["学名"]
 
 
 def _read_rows(file_storage):
@@ -105,4 +106,38 @@ def parse_mapping(file_storage):
             continue  # 完全重复的行去重
         seen.add(key)
         out.append(key)
+    return out, errors
+
+
+def parse_checklist(file_storage):
+    """解析单列正式名录 CSV，返回 (学名列表, 错误列表)。
+
+    表头必须恰为「学名」；一行一个学名，文件内自动去重，任何一行出错整份拒绝。
+    """
+    rows, err = _read_rows(file_storage)
+    if err:
+        return [], err
+    errors = []
+    if not rows:
+        return [], ["文件为空"]
+    if rows[0] != CHECKLIST_HEADER:
+        return [], [
+            "表头应为：%s；实际为：%s"
+            % (",".join(CHECKLIST_HEADER), ",".join(rows[0]))
+        ]
+    out, seen = [], set()
+    for lineno, row in enumerate(rows[1:], start=2):
+        if len(row) != 1:
+            errors.append("第%d行：应有1列（学名），实际%d列" % (lineno, len(row)))
+            continue
+        name = row[0]
+        if not name:
+            errors.append("第%d行：学名为空" % lineno)
+            continue
+        if name in seen:
+            continue  # 文件内重复学名去重
+        seen.add(name)
+        out.append(name)
+    if not out and not errors:
+        errors.append("正式名录至少要有一个学名")
     return out, errors

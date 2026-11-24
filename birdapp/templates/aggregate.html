@@ -24,6 +24,39 @@
 
 {% if result %}
 <h2>汇总结果（已选 {{ result.group|length }} 种，按最新版 v{{ result.latest_version }} 换算）</h2>
+<p class="hint">下表数字与下方待核清单取自同一次汇总的同一已提交快照，不混用新旧数据。</p>
+
+{% if result.pending_records %}
+<h2>待核记录（{{ result.pending_records|length }} 条，暂不计入本次汇总，原明细保留）</h2>
+<p>这些记录从当前换算起点逐版核对正式名录时，任一路径经过了未收录学名
+   （即使后来并回有效学名），因此整条暂不计入最少/最多。</p>
+<table>
+  <tr>
+    <th>记录号</th><th>年份</th><th>原学名</th><th>原版</th><th>只数</th>
+    <th>换算起点</th><th>缺名（版号 / 学名）</th><th>最新版可达学名</th>
+  </tr>
+  {% for p in result.pending_records %}
+  <tr class="pending-row">
+    <td>{{ p.record_id }}</td>
+    <td>{{ p.year }}</td>
+    <td>{{ p.sci_name }}</td>
+    <td>v{{ p.version }}</td>
+    <td>{{ p.count }}</td>
+    <td>{{ p.start_name }}（v{{ p.start_version }}）
+      {% if p.confirmed_name %}<span class="tag">已确认</span>{% endif %}
+    </td>
+    <td>
+      {% for m in p.missing %}v{{ m.version }} / {{ m.name }}{% if not loop.last %}<br>{% endif %}{% endfor %}
+    </td>
+    <td>{{ p.reachable|join("、") }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p><a href="{{ url_for('main.review_page') }}">前往待核记录页 →</a></p>
+{% else %}
+<p class="ok-text">本次汇总无待核记录。</p>
+{% endif %}
+
 {% if result.years %}
 <table>
   <tr><th>年份</th><th>最少只数</th><th>最多只数</th><th>差额</th><th>差额记录</th></tr>

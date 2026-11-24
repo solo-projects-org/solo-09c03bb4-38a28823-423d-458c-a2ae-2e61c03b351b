@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS mapping (
     next_name    TEXT NOT NULL,                -- 下一版学名
     PRIMARY KEY (from_version, old_name, next_name)
 );
+
+CREATE TABLE IF NOT EXISTS checklists (
+    version  INTEGER NOT NULL,                 -- 名录版号
+    sci_name TEXT NOT NULL,                   -- 该版正式名录收录的学名
+    PRIMARY KEY (version, sci_name)
+);
 """
 
 

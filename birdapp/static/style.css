@@ -52,3 +52,25 @@ form.inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 form.inline input[name="confirmed_name"] { width: 200px; }
 form.inline input.ver { width: 70px; }
 code { background: #eee; padding: 1px 5px; border-radius: 3px; }
+tr.pending-row { background: #fdf3e2; }
+tr.pending-row td { color: #7a4b00; }
+.tag {
+  display: inline-block;
+  background: #e2ecf4;
+  border: 1px solid #9db8d2;
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: 0.8rem;
+  margin-left: 4px;
+}
+.hint { color: #666; font-size: 0.9rem; }
+.ok-text { color: #2c5f2d; }
+a.button-link {
+  display: inline-block;
+  background: #2c5f2d;
+  color: #fff;
+  padding: 6px 14px;
+  border-radius: 4px;
+  text-decoration: none;
+}
+input.ver { width: 80px; }

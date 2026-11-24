@@ -11,7 +11,7 @@ from flask import (
 
 from . import csvio
 from .db import get_db
-from .taxonomy import build_index, trace
+from .taxonomy import audit_trace, build_index, trace
 
 bp = Blueprint("main", __name__)
 
@@ -19,13 +19,32 @@ bp = Blueprint("main", __name__)
 # ---------------------------------------------------------------- 公共查询
 
 def _latest_version(db):
-    """最新版号 = 对照表最大起版+1、记录最大版号、确认最大版号 三者取最大。"""
+    """最新版号 = 对照表最大起版+1、记录最大版号、确认最大版号、
+    正式名录最大版号 四者取最大。"""
     mapping_max = db.execute("SELECT MAX(from_version) AS m FROM mapping").fetchone()["m"]
     record_max = db.execute("SELECT MAX(version) AS m FROM records").fetchone()["m"]
     confirmed_max = db.execute(
         "SELECT MAX(confirmed_version) AS m FROM records"
     ).fetchone()["m"]
-    candidates = [v for v in (record_max, confirmed_max) if v is not None]
+    checklist_max = db.execute(
+        "SELECT MAX(version) AS m FROM checklists"
+    ).fetchone()["m"]
+    candidates = [v for v in (record_max, confirmed_max, checklist_max) if v is not None]
+    if mapping_max is not None:
+        candidates.append(mapping_max + 1)
+    return max(candidates) if candidates else 1
+
+
+def _latest_from_snapshot(mapping_rows, records, checklist_rows):
+    """与 _latest_version 同口径，但全部基于一次快照内的数据计算。"""
+    mapping_max = max((r["from_version"] for r in mapping_rows), default=None)
+    record_max = max((r["version"] for r in records), default=None)
+    confirmed_max = max(
+        (r["confirmed_version"] for r in records if r["confirmed_version"] is not None),
+        default=None,
+    )
+    checklist_max = max((r["version"] for r in checklist_rows), default=None)
+    candidates = [v for v in (record_max, confirmed_max, checklist_max) if v is not None]
     if mapping_max is not None:
         candidates.append(mapping_max + 1)
     return max(candidates) if candidates else 1
@@ -42,6 +61,83 @@ def _mapping_index(db):
     return build_index(
         (r["from_version"], r["old_name"], r["next_name"]) for r in _mapping_rows(db)
     )
+
+
+def _checklist_map(rows):
+    """把 (version, sci_name) 行整理成 {版号: set(正式学名)}。"""
+    out = {}
+    for row in rows:
+        out.setdefault(row["version"], set()).add(row["sci_name"])
+    return out
+
+
+def _load_snapshot(db):
+    """在一个只读事务内一次性取出对照、正式名录和全部记录的同一已提交快照。
+
+    汇总数字与待核清单必须来自同一状态，因此所有读取都在该事务内完成，
+    计算结束后回滚释放快照（只读，不写任何数据）。
+    """
+    db.execute("BEGIN")
+    try:
+        mapping_rows = db.execute(
+            "SELECT from_version, old_name, next_name FROM mapping"
+        ).fetchall()
+        checklist_rows = db.execute(
+            "SELECT version, sci_name FROM checklists"
+        ).fetchall()
+        records = db.execute(
+            "SELECT * FROM records ORDER BY year, record_id"
+        ).fetchall()
+    finally:
+        db.execute("ROLLBACK")  # 只读事务，回滚即释放快照
+    idx = build_index(
+        (r["from_version"], r["old_name"], r["next_name"]) for r in mapping_rows
+    )
+    checklists = _checklist_map(checklist_rows)
+    latest = _latest_from_snapshot(mapping_rows, records, checklist_rows)
+    return {
+        "idx": idx,
+        "checklists": checklists,
+        "records": records,
+        "latest": latest,
+    }
+
+
+def _compute_pending(snapshot):
+    """从每条记录当前的换算起点逐版核对正式名录，返回待核记录列表。
+
+    - 缺正式名单的版不做收录核对，沿用原换算规则；
+    - 任一路径经过未收录学名（即使后来并回有效学名）即列入待核，
+      每条记录只列一次，缺名条目逐条给出 (版号, 缺名)。
+    """
+    idx, checklists, latest = (
+        snapshot["idx"],
+        snapshot["checklists"],
+        snapshot["latest"],
+    )
+    pending = []
+    for rec in snapshot["records"]:
+        start_name, start_version = _record_start(rec)
+        reachable, missing = audit_trace(
+            {start_name}, start_version, latest, idx, checklists
+        )
+        if missing:
+            pending.append(
+                {
+                    "record_id": rec["record_id"],
+                    "year": rec["year"],
+                    "sci_name": rec["sci_name"],
+                    "version": rec["version"],
+                    "count": rec["count"],
+                    "confirmed_name": rec["confirmed_name"],
+                    "confirmed_version": rec["confirmed_version"],
+                    "start_name": start_name,
+                    "start_version": start_version,
+                    "missing": missing,
+                    "reachable": sorted(reachable),
+                }
+            )
+    return pending
 
 
 def _latest_names(db, latest):
@@ -76,29 +172,45 @@ def _record_start(rec):
 
 
 def _run_aggregation(db, group):
-    """按年汇总一组最新版物种的最少/最多只数。
+    """按年汇总一组最新版物种的最少/最多只数，并给出同状态下的待核清单。
 
-    单次汇总在一个读事务内一次性取对照表与全部记录的快照，
-    保证不混用新旧对照。
+    单次汇总在一个只读事务内一次性取对照表、正式名录与全部记录的同一
+    已提交快照，保证数字和待核清单不混用新旧数据。待核记录（任一路径经过
+    未收录学名）整条暂不计入汇总，原明细保留。
     """
-    db.execute("BEGIN")
-    try:
-        mapping_rows = db.execute(
-            "SELECT from_version, old_name, next_name FROM mapping"
-        ).fetchall()
-        records = db.execute("SELECT * FROM records ORDER BY year, record_id").fetchall()
-        latest = _latest_version(db)
-    finally:
-        db.execute("ROLLBACK")  # 只读事务，回滚即释放快照
-
-    idx = build_index(
-        (r["from_version"], r["old_name"], r["next_name"]) for r in mapping_rows
+    snapshot = _load_snapshot(db)
+    idx, checklists, latest, records = (
+        snapshot["idx"],
+        snapshot["checklists"],
+        snapshot["latest"],
+        snapshot["records"],
     )
     years = {}
     diff_records = []
+    pending = []
     for rec in records:
         start_name, start_version = _record_start(rec)
-        reachable = trace({start_name}, start_version, latest, idx)
+        reachable, missing = audit_trace(
+            {start_name}, start_version, latest, idx, checklists
+        )
+        if missing:
+            # 任一路径经过未收录学名：整条记录暂不计入汇总
+            pending.append(
+                {
+                    "record_id": rec["record_id"],
+                    "year": rec["year"],
+                    "sci_name": rec["sci_name"],
+                    "version": rec["version"],
+                    "count": rec["count"],
+                    "confirmed_name": rec["confirmed_name"],
+                    "confirmed_version": rec["confirmed_version"],
+                    "start_name": start_name,
+                    "start_version": start_version,
+                    "missing": missing,
+                    "reachable": sorted(reachable),
+                }
+            )
+            continue
         if not (reachable & group):
             continue  # 与本组无关
         # 每条记录只计一次：即使它沿多条路径/多个学名可达本组，也不重复计入
@@ -135,6 +247,8 @@ def _run_aggregation(db, group):
         "group": sorted(group),
         "years": year_rows,
         "diff_records": diff_records,
+        "pending_records": pending,
+        "checklist_versions": sorted(checklists),
     }
 
 
@@ -149,8 +263,13 @@ def index():
             "SELECT COUNT(*) AS c FROM records WHERE confirmed_name IS NOT NULL"
         ).fetchone()["c"],
         "mapping": db.execute("SELECT COUNT(*) AS c FROM mapping").fetchone()["c"],
+        "checklists": db.execute(
+            "SELECT COUNT(DISTINCT version) AS c FROM checklists"
+        ).fetchone()["c"],
         "latest": _latest_version(db),
     }
+    # 待核数按当前生效数据重判（名单/对照/明细/复核任一改动都会反映在这里）
+    stats["pending"] = len(_compute_pending(_load_snapshot(db)))
     return render_template("index.html", stats=stats)
 
 
@@ -184,14 +303,22 @@ def aggregate_run():
 @bp.get("/records")
 def records_page():
     db = get_db()
-    latest = _latest_version(db)
-    idx = _mapping_index(db)
-    records = db.execute("SELECT * FROM records ORDER BY year, record_id").fetchall()
+    snapshot = _load_snapshot(db)
+    idx, checklists, latest = (
+        snapshot["idx"],
+        snapshot["checklists"],
+        snapshot["latest"],
+    )
+    missing_by_id = {}
     rows = []
-    for rec in records:
+    for rec in snapshot["records"]:
         start_name, start_version = _record_start(rec)
-        reachable = sorted(trace({start_name}, start_version, latest, idx))
-        rows.append({"rec": rec, "reachable": reachable})
+        reachable, missing = audit_trace(
+            {start_name}, start_version, latest, idx, checklists
+        )
+        if missing:
+            missing_by_id[rec["record_id"]] = missing
+        rows.append({"rec": rec, "reachable": sorted(reachable)})
     all_names = [
         r["n"]
         for r in db.execute(
@@ -200,7 +327,25 @@ def records_page():
         )
     ]
     return render_template(
-        "records.html", rows=rows, latest=latest, all_names=all_names
+        "records.html",
+        rows=rows,
+        latest=latest,
+        all_names=all_names,
+        missing_by_id=missing_by_id,
+    )
+
+
+@bp.get("/review")
+def review_page():
+    """待核记录：任一路径经过未收录学名的记录（与汇总同一口径重判）。"""
+    db = get_db()
+    snapshot = _load_snapshot(db)
+    pending = _compute_pending(snapshot)
+    return render_template(
+        "review.html",
+        pending=pending,
+        latest=snapshot["latest"],
+        checklist_versions=sorted(snapshot["checklists"]),
     )
 
 
@@ -212,9 +357,40 @@ def mapping_page():
     )
 
 
+@bp.get("/checklists")
+def checklists_page():
+    db = get_db()
+    latest = _latest_version(db)
+    versions = [
+        {"version": r["version"], "count": r["c"]}
+        for r in db.execute(
+            "SELECT version, COUNT(*) AS c FROM checklists "
+            "GROUP BY version ORDER BY version"
+        )
+    ]
+    # 每个版号取前若干学名做页面预览
+    preview = {}
+    for v in versions:
+        preview[v["version"]] = [
+            r["sci_name"]
+            for r in db.execute(
+                "SELECT sci_name FROM checklists WHERE version = ? "
+                "ORDER BY sci_name LIMIT 10",
+                (v["version"],),
+            )
+        ]
+    return render_template(
+        "checklists.html",
+        versions=versions,
+        preview=preview,
+        latest=latest,
+    )
+
+
 @bp.get("/api/status")
 def api_status():
     db = get_db()
+    snapshot = _load_snapshot(db)
     return jsonify(
         {
             "records": db.execute("SELECT COUNT(*) AS c FROM records").fetchone()["c"],
@@ -224,6 +400,8 @@ def api_status():
             "mapping_entries": db.execute("SELECT COUNT(*) AS c FROM mapping").fetchone()[
                 "c"
             ],
+            "checklist_versions": len(snapshot["checklists"]),
+            "pending_records": len(_compute_pending(snapshot)),
             "latest_version": _latest_version(db),
         }
     )
@@ -357,6 +535,57 @@ def upload_mapping():
         "ok",
     )
     return redirect(url_for("main.mapping_page"))
+
+
+@bp.post("/upload/checklist")
+def upload_checklist():
+    """整份替换某一版的正式名录（单列学名 CSV）。
+
+    换名单时不扫描普查明细、不校验记录可达性：文件有误或保存失败时
+    保留该版原名单。是否有待核记录留给下次汇总/待核页按生效数据重判。
+    """
+    version_raw = (request.form.get("version") or "").strip()
+    try:
+        version = int(version_raw)
+    except ValueError:
+        version = None
+    if version is None or version < 1:
+        flash("版号应为正整数，已保留原名单", "error")
+        return redirect(url_for("main.checklists_page"))
+
+    file = request.files.get("file")
+    if file is None or file.filename == "":
+        flash("请选择正式名录 CSV 文件", "error")
+        return redirect(url_for("main.checklists_page"))
+    names, errors = csvio.parse_checklist(file)
+    if errors:
+        for err in errors[:20]:
+            flash(err, "error")
+        flash("正式名录上传被拒绝，v%d 原名单保持不变" % version, "error")
+        return redirect(url_for("main.checklists_page"))
+
+    db = get_db()
+    old_count = db.execute(
+        "SELECT COUNT(*) AS c FROM checklists WHERE version = ?", (version,)
+    ).fetchone()["c"]
+    db.execute("BEGIN")
+    try:
+        db.execute("DELETE FROM checklists WHERE version = ?", (version,))
+        db.executemany(
+            "INSERT INTO checklists (version, sci_name) VALUES (?, ?)",
+            [(version, name) for name in names],
+        )
+        db.commit()
+    except Exception:
+        db.rollback()  # 保存失败：删除已回滚，原名单保留
+        flash("正式名录保存失败，v%d 原名单保持不变" % version, "error")
+        return redirect(url_for("main.checklists_page"))
+    flash(
+        "v%d 正式名录已整份替换：%d 个学名（原名单 %d 个；本次未扫描普查明细）"
+        % (version, len(names), old_count),
+        "ok",
+    )
+    return redirect(url_for("main.checklists_page"))
 
 
 # ---------------------------------------------------------------- 复核确认
